@@ -28,8 +28,27 @@ def list_listeners(runner, protocol: str|None=None) -> list[Listener]:
     rows=parse_ss(out.stdout)
     return [r for r in rows if r.protocol==protocol] if protocol else rows
 
+def _compact_values(values: list[str], width: int) -> str:
+    unique = list(dict.fromkeys(values))
+    joined = ','.join(unique)
+    if len(joined) <= width:
+        return joined
+    if len(unique) == 1:
+        return joined
+    suffix = f' (+{len(unique) - 1})'
+    return unique[0][:max(1, width - len(suffix))] + suffix
+
+
 def format_listeners(listeners: list[Listener]) -> str:
-    lines=[f'{"PROTO":<6} {"ADDRESS":<28} {"PORT":>5} {"PID":>8} {"PROCESS":<22} OWNER']
-    for r in listeners:
-        lines.append(f'{r.protocol:<6} {r.bind_address:<28.28} {r.port:>5} {r.pid:>8} {r.process:<22.22} {r.owner_hint}')
+    """Display each (protocol, port) once, preserving addresses and process owners."""
+    grouped: dict[tuple[str, int], list[Listener]] = {}
+    for listener in listeners:
+        grouped.setdefault((listener.protocol, listener.port), []).append(listener)
+
+    lines = [f'{"PROTO":<6} {"PORT":>5} {"ADDRESS":<28} {"PID":<17} {"PROCESS":<24} SOCKETS']
+    for (protocol, port), entries in sorted(grouped.items(), key=lambda item: (item[0][1], item[0][0])):
+        addresses = _compact_values([entry.bind_address for entry in entries], 28)
+        pids = _compact_values([entry.pid for entry in entries], 17)
+        processes = _compact_values([entry.process for entry in entries], 24)
+        lines.append(f'{protocol:<6} {port:>5} {addresses:<28} {pids:<17} {processes:<24} {len(entries):>7}')
     return '\n'.join(lines)
