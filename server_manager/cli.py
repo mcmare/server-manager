@@ -8,7 +8,7 @@ from .nginx import list_sites,render_proxy_site,SiteChange,plan_site_change
 from .transactions import apply_site_change,rollback_site_change
 from .ports import list_listeners,format_listeners
 from .systemd import list_units,plan_systemd_action,apply_systemd_action,create_managed_unit
-from .compose import discover_compose,plan_compose_action,apply_compose_action,plan_restart_override,apply_restart_override,project_status,service_statuses
+from .compose import discover_compose,plan_compose_action,apply_compose_action,plan_restart_override,apply_restart_override,project_status,service_statuses,project_resources
 from .cleanup import inspect_cleanup,apply_cleanup
 from .certbot import plan_certificate,run_certificate,list_certificates,renewal_dry_run
 from .discovery import find_backend_owners
@@ -204,9 +204,20 @@ def _systemd_menu(runner,state,dry_run):
 def _compose_menu(runner,state,dry_run):
     try:projects=discover_compose(runner)
     except (RuntimeError,ValueError) as exc:print('Docker:',exc);return
-    project=select(projects,'Docker Compose',lambda p:f'{p.name} [{", ".join(p.services)}] — '+paint(project_status(p), 'green' if project_status(p).startswith('Работает') else 'yellow' if project_status(p).startswith(('Частично','Проблема')) else 'red'))
+    image_query=runner.run(['docker','image','ls','-q','--no-trunc'])
+    image_ids=set(image_query.stdout.splitlines()) if image_query.returncode == 0 else None
+    def describe(p):
+        present,known,count=project_resources(p,runner,image_ids) if image_ids is not None else (None,len(p.image_ids),len(p.container_ids))
+        status=project_status(p)
+        color='green' if status.startswith('Работает') else 'yellow' if status.startswith(('Частично','Проблема')) else 'red'
+        images=f'{present}/{known}' if present is not None else '?'
+        return f'{p.name} — '+paint(status,color)+f' | контейнеры {count} | образы {images} | кэш: общий'
+    project=select(projects,'Docker Compose',describe)
     if project is None:return
     print('Compose:',project.config_file, '\nСтатус:', project_status(project))
+    available,known,containers=project_resources(project,runner,image_ids) if image_ids is not None else (None,len(project.image_ids),len(project.container_ids))
+    print('Контейнеры:',containers,'| Образы:',f'{available}/{known}' if available is not None else 'не удалось проверить')
+    print('Кэш BuildKit: общий для Docker, принадлежность проекту не определяется')
     for service, status in service_statuses(project).items():
         print('  ',service,paint(status, 'green' if status == 'running' else 'yellow' if status in ('restarting','unhealthy') else 'red'))
     operation=input('1 — stop, 2 — start, 3 — отключить restart, 4 — остановить и очистить: ').strip()
