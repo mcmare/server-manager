@@ -25,7 +25,9 @@ def _extract(contents):
         if kind=='server_name': domains.extend(v for v in value.split() if v!='_')
         else: endpoints.append(value.strip())
     server_count=len(re.findall(r'\bserver\s*\{',clean))
-    ambiguous=(server_count!=1 or len(endpoints)!=1 or any('$' in e or not e.startswith('http://') for e in endpoints))
+    domains=list(dict.fromkeys(domains))
+    endpoints=list(dict.fromkeys(endpoints))
+    ambiguous=(server_count<1 or len(endpoints)!=1 or any('$' in e or not e.startswith(('http://','https://')) for e in endpoints))
     return tuple(domains),tuple(endpoints),ambiguous
 
 def list_sites(available_dir:Path=Path('/etc/nginx/sites-available'), enabled_dir:Path=Path('/etc/nginx/sites-enabled')) -> list[Site]:
