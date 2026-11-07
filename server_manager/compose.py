@@ -140,3 +140,19 @@ def project_resources(project: ComposeProject, runner, image_ids: set[str] | Non
             return None, len(project.image_ids), len(project.container_ids)
         image_ids = set(response.stdout.splitlines())
     return len(set(project.image_ids) & image_ids), len(project.image_ids), len(project.container_ids)
+
+
+def global_build_cache_status(runner) -> str:
+    """Docker reports BuildKit cache globally, not attributable to a Compose project."""
+    response = runner.run(['docker', 'system', 'df', '--format', '{{json .}}'])
+    if response.returncode:
+        return 'не удалось определить'
+    try:
+        rows = [json.loads(row) for row in response.stdout.splitlines() if row.strip()]
+        cache = next((row for row in rows if row.get('Type') == 'Build Cache'), None)
+        if cache is None:
+            return 'не удалось определить'
+        count = int(cache.get('TotalCount', 0))
+        return ('есть: ' + str(cache.get('Size', '?')) + ' (общий)') if count else 'нет (общий)'
+    except (ValueError, TypeError, AttributeError):
+        return 'не удалось определить'
