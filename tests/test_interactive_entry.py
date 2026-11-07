@@ -10,12 +10,12 @@ from server_manager.cli import main
 class InteractiveEntryTests(unittest.TestCase):
     def test_no_arguments_opens_menu(self):
         with patch('server_manager.cli.StateStore'):
-            with patch('builtins.input', side_effect=['8', '0']):
+            with patch('builtins.input', side_effect=['6', '0']):
                 with patch('server_manager.cli.list_listeners', return_value=[]):
                     with patch('sys.stdout', new_callable=io.StringIO) as out:
                         self.assertEqual(main([]), 0)
         self.assertIn('SERVER MANAGER', out.getvalue())
-        self.assertIn('Порты', out.getvalue())
+        self.assertIn('Занятые порты', out.getvalue())
 
     def test_script_launcher_uses_interactive_default(self):
         script = Path(__file__).resolve().parents[1] / 'server-manager.py'
