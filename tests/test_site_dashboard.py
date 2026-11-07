@@ -44,7 +44,7 @@ server { listen 443 ssl; server_name bb.mcmare.ru; location / { proxy_pass http:
             config=available/'bb'; config.write_text('server { server_name bb.mcmare.ru; proxy_pass http://127.0.0.1:8805; }')
             (enabled/'bb').symlink_to(config)
             runner=Runner()
-            inputs=iter(['1','2','ДА','ДА','ДА'])
+            inputs=iter(['1','2','y','y','y'])
             with patch('server_manager.cli.AVAILABLE',available), patch('server_manager.cli.ENABLED',enabled), \
                 patch('server_manager.cli._ensure_root',return_value=True), \
                 patch('server_manager.cli.input',side_effect=lambda *a: next(inputs)), \
