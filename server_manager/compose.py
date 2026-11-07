@@ -13,6 +13,7 @@ class ComposeProject:
     config_file: str
     services: tuple[str,...]
     container_ids: tuple[str,...]
+    states: tuple[tuple[str, str, str], ...] = ()
 
 @dataclass(frozen=True)
 class ComposeAction:
@@ -41,11 +42,15 @@ def discover_compose(runner)->list[ComposeProject]:
         files=labels.get('com.docker.compose.project.config_files','')
         if not name or not service: continue
         key=(name,workdir,files)
-        entry=groups.setdefault(key,{'services':set(),'ids':set()})
+        entry=groups.setdefault(key,{'services':set(),'ids':set(),'states':[]})
         entry['services'].add(service);entry['ids'].add(obj['Id'])
+        state=obj.get('State') or {}
+        health=(state.get('Health') or {}).get('Status') or ''
+        status=state.get('Status') or ('running' if state.get('Running') else 'unknown')
+        entry['states'].append((service,status,health))
     result=[]
     for (name,workdir,files),info in groups.items():
-        result.append(ComposeProject(name,workdir,files,tuple(sorted(info['services'])),tuple(sorted(info['ids']))))
+        result.append(ComposeProject(name,workdir,files,tuple(sorted(info['services'])),tuple(sorted(info['ids'])),tuple(sorted(info['states']))))
     return sorted(result,key=lambda x:x.name)
 
 def compose_command(project,verb,services=()):
@@ -90,3 +95,37 @@ def apply_restart_override(restart_plan,runner,state,dry_run=False):
             if res.returncode==0:policies[cid]=prior;state.save_state(data)
             state.record('docker-restart-disable',cid,{'ok':res.returncode==0,'previous':prior})
     return results
+
+def service_statuses(project: ComposeProject) -> dict[str, str]:
+    """Describe the current state of each service represented by discovered containers."""
+    grouped: dict[str, list[tuple[str, str]]] = {service: [] for service in project.services}
+    for service, status, health in project.states:
+        grouped.setdefault(service, []).append((status, health))
+    output = {}
+    for service, entries in grouped.items():
+        if not entries:
+            output[service] = 'unknown'
+        elif any(status == 'running' and health == 'unhealthy' for status, health in entries):
+            output[service] = 'unhealthy'
+        elif any(status == 'running' for status, health in entries):
+            output[service] = 'running'
+        elif any(status == 'restarting' for status, health in entries):
+            output[service] = 'restarting'
+        else:
+            output[service] = entries[0][0]
+    return output
+
+
+def project_status(project: ComposeProject) -> str:
+    states = service_statuses(project)
+    total = len(states)
+    running = sum(status in ('running', 'unhealthy') for status in states.values())
+    if not total:
+        return 'Неизвестно (0/0)'
+    if any(status in ('unhealthy', 'restarting') for status in states.values()):
+        return f'Проблема ({running}/{total})'
+    if running == total:
+        return f'Работает ({running}/{total})'
+    if running == 0:
+        return f'Остановлен (0/{total})'
+    return f'Частично ({running}/{total})'
