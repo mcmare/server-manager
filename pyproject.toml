@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "debian-server-manager"
+version = "1.1.0"
+description = "Local CLI for Debian Nginx, systemd, Docker Compose and port inventory"
+requires-python = ">=3.10"
+
+[project.scripts]
+server-manager = "server_manager.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["server_manager*"]
