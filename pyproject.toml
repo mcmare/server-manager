@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "debian-server-manager"
-version = "1.1.0"
+version = "1.3.0"
 description = "Local CLI for Debian Nginx, systemd, Docker Compose and port inventory"
 requires-python = ">=3.10"
 
