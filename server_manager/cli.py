@@ -12,6 +12,7 @@ from .compose import discover_compose,plan_compose_action,apply_compose_action,p
 from .cleanup import inspect_cleanup,apply_cleanup
 from .certbot import plan_certificate,run_certificate,list_certificates,renewal_dry_run
 from .discovery import find_backend_owners
+from .ui import paint, heading, note, site_status
 
 AVAILABLE=Path('/etc/nginx/sites-available')
 ENABLED=Path('/etc/nginx/sites-enabled')
@@ -29,56 +30,114 @@ def select(items,title,describe=str):
     return items[n-1] if 1<=n<=len(items) else None
 
 def _display_site(site):
-    return f'{site.name} [{"включён" if site.enabled else "отключён"}] {", ".join(site.domains) or "?"} → {", ".join(site.endpoints) or "?"}'+ (' [неоднозначно]' if site.ambiguous else '')
+    domains = ", ".join(site.domains) or site.name
+    backend = ", ".join(site.endpoints) or "—"
+    warning = paint("  [нужна ручная проверка]", "yellow") if site.ambiguous else ""
+    return f'{site_status(site.enabled):<18} {domains:<35.35} {backend}{warning}'
 
 def _ensure_root():
-    if os.geteuid()!=0:print('Операция требует sudo/root');return False
+    if os.geteuid() != 0:
+        note('Операция требует sudo/root', 'red')
+        return False
     return True
 
-def _site_action(action,runner,state,dry_run):
-    sites=list_sites(AVAILABLE,ENABLED)
-    selected=select([s for s in sites if s.enabled==(action=='disable')], 'Сайты Nginx',_display_site)
-    if selected is None:return
-    if selected.path.is_symlink():print('Неуправляемая ссылка: операция отменена');return
-    if not _ensure_root() and not dry_run:return
-    change=plan_site_change(action,selected,AVAILABLE,ENABLED)
-    print('План:',action,selected.name,'домены:',', '.join(selected.domains))
-    if action=='disable':
-        for s in sites:
-            if s.name!=selected.name and set(s.endpoints)&set(selected.endpoints):print('ВНИМАНИЕ: общий backend также у',s.name)
-    if not dry_run and not confirm('Изменить состояние сайта?'):return
-    result=apply_site_change(change,runner,state,dry_run=dry_run)
+def _site_action(action, runner, state, dry_run, selected=None):
+    """Review everything before applying Nginx, then optionally stop identified backend."""
+    sites = list_sites(AVAILABLE, ENABLED)
+    if selected is None:
+        selected = select([s for s in sites if s.enabled == (action == 'disable')],
+                          'Сайты Nginx', _display_site)
+    if selected is None: return
+    if selected.enabled != (action == 'disable'):
+        note('Сайт уже в нужном состоянии', 'yellow'); return
+    if selected.path.is_symlink() or selected.ambiguous:
+        note('Небезопасная/неоднозначная конфигурация: автоматические действия запрещены', 'red'); return
+    if not _ensure_root() and not dry_run: return
+    change = plan_site_change(action, selected, AVAILABLE, ENABLED)
+    heading(('Отключение' if action == 'disable' else 'Включение') + ': ' + (selected.domains[0] if selected.domains else selected.name))
+    print('Nginx:', selected.name)
+    print('Backend:', ', '.join(selected.endpoints) or 'не указан')
+    if action == 'enable':
+        # Enabling Nginx does not implicitly restart a backend with unknown current configuration.
+        if not dry_run and not confirm('Включить конфигурацию Nginx?'): return
+        print(apply_site_change(change,runner,state,dry_run=dry_run).message)
+        return
+    shared = [s for s in sites if s.name != selected.name and s.enabled and
+              set(s.endpoints) & set(selected.endpoints)]
+    if shared:
+        note('ВНИМАНИЕ: этот backend используется и другими сайтами:', 'yellow')
+        for site in shared: print('  •', ', '.join(site.domains) or site.name)
+    owners = find_backend_owners(selected.endpoints[0], runner) if len(selected.endpoints) == 1 else []
+    owner = owners[0] if len(owners) == 1 else None
+    resolved = None
+    if owner:
+        print('Найдено приложение:', paint(owner.kind.upper(), 'cyan'), owner.name)
+        if owner.kind == 'compose':
+            try:
+                matches = [(p, sv) for p in discover_compose(runner) for sv in p.services
+                           if p.name + '/' + sv == owner.name and owner.container_id in p.container_ids]
+            except (RuntimeError, ValueError): matches = []
+            if len(matches) == 1: resolved = matches[0]
+        elif owner.kind == 'systemd': resolved = owner.name
+    else:
+        note('Связанная служба не определена однозначно', 'yellow')
+    print('\nВыберите действие:')
+    print('  1. Отключить только сайт Nginx')
+    if resolved and not shared:
+        print('  2. Отключить сайт + остановить приложение + отключить автозапуск')
+        print('  3. Отключить сайт + остановить приложение (автозапуск оставить)')
+    elif resolved and shared:
+        note('  Остановка общей службы заблокирована; используйте отдельный раздел после проверки зависимостей', 'yellow')
+    print('  0. Отмена')
+    mode = input('Действие [0]: ').strip()
+    if mode not in (('1','2','3') if resolved and not shared else ('1',)): return
+    plan = ['Отключить Nginx: ' + selected.name]
+    if mode in ('2','3'): plan.append('Остановить: '+owner.name)
+    if mode == '2': plan.append('Отключить автозапуск: '+owner.name)
+    print('\nПЛАН:')
+    for step in plan: print('  •', step)
+    if not dry_run and not confirm('Применить весь план?'): return
+    # Preflight: don't disable the site if the selected backend cannot be safely controlled.
+    if mode in ('2','3') and owner.kind == 'compose':
+        project, service = resolved
+        if not Path(project.config_file).is_file():
+            note('Compose-файл недоступен. Операция отменена до изменения Nginx.', 'red'); return
+    result = apply_site_change(change, runner, state, dry_run=dry_run)
     print(result.message)
-    if not result.ok or action!='disable' or dry_run:return
-    if selected.ambiguous or len(selected.endpoints)!=1:
-        print('Backend нельзя определить уверенно. Остановка службы запрещена.');return
-    endpoint=selected.endpoints[0].removeprefix('http://')
-    owners=find_backend_owners(endpoint,runner)
-    if len(owners)!=1:
-        print('Владелец backend не определён однозначно. Служба не остановлена.');return
-    owner=owners[0]
-    print('Обнаружен backend:',owner.name)
-    if owner.kind!='compose':
-        print('Остановка backend этого типа недоступна автоматически');return
-    try:
-        matches=[(p,sv) for p in discover_compose(runner) for sv in p.services if p.name+'/'+sv==owner.name and owner.container_id in p.container_ids]
-    except (RuntimeError,ValueError):matches=[]
-    if len(matches)!=1:
-        print('Неоднозначная связь Compose: остановка запрещена');return
-    project,service=matches[0]
-    mode=input('Backend: 0 — оставить, 1 — stop, 2 — stop + restart=no: ').strip()
-    if mode not in ('1','2'):return
-    if not confirm('Остановить '+owner.name+'?'):return
-    result=apply_compose_action(plan_compose_action(project,(service,),'stop'),runner,state)
-    print(result.message)
-    if not result.ok or mode!='2':return
-    ids=tuple(sorted(o.container_id for o in owners if o.kind=='compose' and o.name==owner.name))
-    if not ids:print('Контейнер не найден');return
-    try:restart=plan_restart_override(ids,runner)
-    except RuntimeError as exc:print(exc);return
-    print('Текущие политики:',restart)
-    if confirm('Отключить автозапуск docker update --restart=no?'):
-        print(apply_restart_override(restart,runner,state))
+    if not result.ok or mode == '1': return
+    if owner.kind == 'compose':
+        project, service = resolved
+        stopped = apply_compose_action(plan_compose_action(project,(service,), 'stop'), runner,state,dry_run=dry_run)
+    else:
+        stopped = apply_systemd_action(plan_systemd_action(resolved,'stop'),runner,state,dry_run=dry_run)
+    print('Приложение:', stopped.message)
+    if not stopped.ok:
+        note('Сайт отключён, но остановка приложения завершилась ошибкой', 'red'); return
+    if mode != '2': return
+    if owner.kind == 'compose':
+        try:
+            policies = plan_restart_override((owner.container_id,),runner)
+            print('Docker restart:', apply_restart_override(policies,runner,state,dry_run=dry_run))
+            note('Compose-файл не менялся. При пересоздании контейнера политика restart может вернуться.', 'yellow')
+        except RuntimeError as exc: note('Не удалось изменить restart: '+str(exc), 'red')
+    else:
+        disabled = apply_systemd_action(plan_systemd_action(resolved,'disable'),runner,state,dry_run=dry_run)
+        print('Автозапуск:', disabled.message)
+
+def _sites_dashboard(runner,state,dry_run):
+    while True:
+        sites=list_sites(AVAILABLE,ENABLED)
+        heading('Управление сайтами Nginx')
+        site=select(sites,'Выберите сайт',_display_site)
+        if site is None:return
+        heading(', '.join(site.domains) or site.name)
+        print('Конфигурация:', site.path)
+        print('Состояние:', site_status(site.enabled))
+        print('Адрес backend:', ', '.join(site.endpoints) or 'не определён')
+        print('  1. '+('Отключить сайт и приложение' if site.enabled else 'Включить сайт'))
+        print('  0. Назад')
+        if input('Действие: ').strip()=='1':
+            _site_action('disable' if site.enabled else 'enable',runner,state,dry_run,site)
 
 def _create_site(runner,state,dry_run):
     if not _ensure_root() and not dry_run:return
@@ -202,31 +261,35 @@ def _restore_backup(runner,state,dry_run):
 
 def menu(runner,state,dry_run):
     while True:
-        print('\n=== SERVER MANAGER ===\n1. Сайты\n2. Добавить сайт\n3. Отключить сайт\n4. Включить сайт\n5. systemd\n6. Docker Compose\n7. Certbot\n8. Порты\n9. nginx -t\n10. Журнал\n0. Выход')
-        try:
-            choice=input('> ').strip()
+        heading('SERVER MANAGER  •  управление сервером')
+        print('  '+paint('1.', 'cyan')+' Управление сайтами  '+paint('◀ главный раздел', 'green'))
+        print('  2. Добавить сайт')
+        print('  3. Docker Compose')
+        print('  4. systemd')
+        print('  5. SSL / Certbot')
+        print('  6. Занятые порты')
+        print('  7. Проверить nginx -t')
+        print('  8. Журнал и восстановление')
+        print('  0. Выход')
+        try: choice=input('\nВыбор: ').strip()
         except (EOFError, KeyboardInterrupt):
-            print('\nВыход из Server Manager')
-            break
+            print('\nВыход из Server Manager');break
         try:
             if choice=='0':break
-            if choice=='1':
-                for s in list_sites(AVAILABLE,ENABLED):print(_display_site(s))
+            if choice=='1':_sites_dashboard(runner,state,dry_run)
             elif choice=='2':_create_site(runner,state,dry_run)
-            elif choice=='3':_site_action('disable',runner,state,dry_run)
-            elif choice=='4':_site_action('enable',runner,state,dry_run)
-            elif choice=='5':_systemd_menu(runner,state,dry_run)
-            elif choice=='6':_compose_menu(runner,state,dry_run)
-            elif choice=='7':_certbot_menu(runner,state,dry_run)
-            elif choice=='8':print(format_listeners(list_listeners(runner)))
-            elif choice=='9':print(runner.run(['nginx','-t']).stderr)
-            elif choice=='10':
+            elif choice=='3':_compose_menu(runner,state,dry_run)
+            elif choice=='4':_systemd_menu(runner,state,dry_run)
+            elif choice=='5':_certbot_menu(runner,state,dry_run)
+            elif choice=='6':print(format_listeners(list_listeners(runner)))
+            elif choice=='7':print(runner.run(['nginx','-t']).stderr)
+            elif choice=='8':
                 sub=input('1 — журнал, 2 — восстановить backup Nginx: ').strip()
                 if sub=='2':_restore_backup(runner,state,dry_run)
                 elif sub=='1':
                     path=state.root/'audit.jsonl'
                     print('\n'.join(path.read_text().splitlines()[-15:]) if path.exists() else 'Журнал пуст')
-        except (ValueError,RuntimeError,OSError) as exc:print('Ошибка:',exc)
+        except (ValueError,RuntimeError,OSError) as exc:note('Ошибка: '+str(exc),'red')
 
 class DryRunState:
     """No persistence or privileged directory creation in dry-run mode."""
