@@ -43,3 +43,24 @@ class InventoryTests(unittest.TestCase):
                 return super().run(argv, **kw)
         runner = Failing()
         self.assertEqual(project_resources(discover_compose(runner)[0], runner), (None, 2, 2))
+
+
+class CacheTests(unittest.TestCase):
+    def test_global_cache_present(self):
+        from server_manager.compose import global_build_cache_status
+
+        class CacheRunner:
+            def run(self, argv, **kwargs):
+                self.assert_command = argv
+                return CommandResult(0, '{"Type":"Images","TotalCount":"2"}\n{"Type":"Build Cache","TotalCount":"8","Size":"123MB"}\n')
+
+        self.assertEqual(global_build_cache_status(CacheRunner()), 'есть: 123MB (общий)')
+
+    def test_global_cache_unavailable(self):
+        from server_manager.compose import global_build_cache_status
+
+        class BadRunner:
+            def run(self, argv, **kwargs):
+                return CommandResult(1, '', 'denied')
+
+        self.assertEqual(global_build_cache_status(BadRunner()), 'не удалось определить')
