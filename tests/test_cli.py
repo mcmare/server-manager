@@ -38,3 +38,18 @@ class RestoreMenuTests(unittest.TestCase):
     with patch('sys.stdout',io.StringIO()):
      with patch('server_manager.cli.rollback_site_change',side_effect=AssertionError('should not restore')):
       _restore_backup(Fake(),state,False)
+
+
+class ConfirmationTests(unittest.TestCase):
+ def test_accepts_one_letter_y_case_insensitive(self):
+  from server_manager.cli import confirm
+  for answer in ('y','Y',' y '):
+   with self.subTest(answer=answer), patch('builtins.input',return_value=answer) as prompt:
+    self.assertTrue(confirm('Apply?'))
+    self.assertIn('[y/N]',prompt.call_args.args[0])
+
+ def test_rejects_every_other_input_including_cyrillic(self):
+  from server_manager.cli import confirm
+  for answer in ('', 'n', 'N', 'yes', 'ДА', 'да', 'н', 'yep'):
+   with self.subTest(answer=answer), patch('builtins.input',return_value=answer):
+    self.assertFalse(confirm('Apply?'))
