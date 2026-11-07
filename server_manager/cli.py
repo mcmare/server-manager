@@ -8,7 +8,7 @@ from .nginx import list_sites,render_proxy_site,SiteChange,plan_site_change
 from .transactions import apply_site_change,rollback_site_change
 from .ports import list_listeners,format_listeners
 from .systemd import list_units,plan_systemd_action,apply_systemd_action,create_managed_unit
-from .compose import discover_compose,plan_compose_action,apply_compose_action,plan_restart_override,apply_restart_override
+from .compose import discover_compose,plan_compose_action,apply_compose_action,plan_restart_override,apply_restart_override,project_status,service_statuses
 from .cleanup import inspect_cleanup,apply_cleanup
 from .certbot import plan_certificate,run_certificate,list_certificates,renewal_dry_run
 from .discovery import find_backend_owners
@@ -204,9 +204,11 @@ def _systemd_menu(runner,state,dry_run):
 def _compose_menu(runner,state,dry_run):
     try:projects=discover_compose(runner)
     except (RuntimeError,ValueError) as exc:print('Docker:',exc);return
-    project=select(projects,'Docker Compose',lambda p:f'{p.name} [{", ".join(p.services)}]')
+    project=select(projects,'Docker Compose',lambda p:f'{p.name} [{", ".join(p.services)}] — '+paint(project_status(p), 'green' if project_status(p).startswith('Работает') else 'yellow' if project_status(p).startswith(('Частично','Проблема')) else 'red'))
     if project is None:return
-    print('Compose:',project.config_file,'\nСервисы:',', '.join(project.services))
+    print('Compose:',project.config_file, '\nСтатус:', project_status(project))
+    for service, status in service_statuses(project).items():
+        print('  ',service,paint(status, 'green' if status == 'running' else 'yellow' if status in ('restarting','unhealthy') else 'red'))
     operation=input('1 — stop, 2 — start, 3 — отключить restart, 4 — остановить и очистить: ').strip()
     if operation in ('1','2'):
         service=select(project.services,'Выберите сервис')
