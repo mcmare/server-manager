@@ -14,6 +14,7 @@ class ComposeProject:
     services: tuple[str,...]
     container_ids: tuple[str,...]
     states: tuple[tuple[str, str, str], ...] = ()
+    image_ids: tuple[str,...] = ()
 
 @dataclass(frozen=True)
 class ComposeAction:
@@ -42,15 +43,16 @@ def discover_compose(runner)->list[ComposeProject]:
         files=labels.get('com.docker.compose.project.config_files','')
         if not name or not service: continue
         key=(name,workdir,files)
-        entry=groups.setdefault(key,{'services':set(),'ids':set(),'states':[]})
+        entry=groups.setdefault(key,{'services':set(),'ids':set(),'states':[],'images':set()})
         entry['services'].add(service);entry['ids'].add(obj['Id'])
         state=obj.get('State') or {}
         health=(state.get('Health') or {}).get('Status') or ''
         status=state.get('Status') or ('running' if state.get('Running') else 'unknown')
         entry['states'].append((service,status,health))
+        if obj.get('Image'): entry['images'].add(obj['Image'])
     result=[]
     for (name,workdir,files),info in groups.items():
-        result.append(ComposeProject(name,workdir,files,tuple(sorted(info['services'])),tuple(sorted(info['ids'])),tuple(sorted(info['states']))))
+        result.append(ComposeProject(name,workdir,files,tuple(sorted(info['services'])),tuple(sorted(info['ids'])),tuple(sorted(info['states'])),tuple(sorted(info['images']))))
     return sorted(result,key=lambda x:x.name)
 
 def compose_command(project,verb,services=()):
@@ -129,3 +131,12 @@ def project_status(project: ComposeProject) -> str:
     if running == 0:
         return f'Остановлен (0/{total})'
     return f'Частично ({running}/{total})'
+
+def project_resources(project: ComposeProject, runner, image_ids: set[str] | None = None) -> tuple[int | None, int, int]:
+    """Return (present images, known images, containers); None means unavailable inventory."""
+    if image_ids is None:
+        response = runner.run(['docker', 'image', 'ls', '-q', '--no-trunc'])
+        if response.returncode:
+            return None, len(project.image_ids), len(project.container_ids)
+        image_ids = set(response.stdout.splitlines())
+    return len(set(project.image_ids) & image_ids), len(project.image_ids), len(project.container_ids)
