@@ -18,7 +18,7 @@ AVAILABLE=Path('/etc/nginx/sites-available')
 ENABLED=Path('/etc/nginx/sites-enabled')
 
 def confirm(label):
-    return input(f'{label}\nВведите ДА для подтверждения: ').strip()=='ДА'
+    return input(f'{label}\nConfirm [y/N]: ').strip().lower() == 'y'
 
 def select(items,title,describe=str):
     if not items:print('Нет доступных записей');return None
